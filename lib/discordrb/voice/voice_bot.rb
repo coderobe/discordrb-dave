@@ -307,6 +307,12 @@ module Discordrb::Voice
 
         break unless @playing
 
+        # Stop playback if the voice WebSocket connection has died unexpectedly
+        if @ws.connection_dead
+          Discordrb::LOGGER.warn('Voice WebSocket connection lost during playback; stopping stream')
+          break
+        end
+
         # Get timestamp before encoding
         start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC, :millisecond)
 

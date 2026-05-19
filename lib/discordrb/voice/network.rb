@@ -203,6 +203,11 @@ module Discordrb::Voice
     # @return [VoiceUDP] the UDP voice connection over which the actual audio data is sent.
     attr_reader :udp
 
+    # @return [true, false] whether the voice WebSocket connection has died unexpectedly.
+    #   This is set when the underlying socket raises a connection error or the server closes
+    #   the connection while the session is still meant to be active.
+    attr_reader :connection_dead
+
     # Makes a new voice websocket client, but doesn't connect it (see {#connect} for that)
     # @param channel [Channel] The voice channel to connect to
     # @param bot [Bot] The regular bot to which this vWS is bound
@@ -221,6 +226,7 @@ module Discordrb::Voice
 
       @udp = VoiceUDP.new
       @media_ready = false
+      @connection_dead = false
       @dave_expected_user_ids = Set.new([@bot.profile.id.to_s])
       @dave_expected_user_ids.merge(@channel.users.map { |user| user.id.to_s })
     end
@@ -297,11 +303,17 @@ module Discordrb::Voice
         op: opcode,
         d: data
       }.to_json, :text)
+    rescue SystemCallError, IOError => e
+      @connection_dead = true
+      @bot.debug("VWS: send_opcode failed, marking connection dead (#{e.class}: #{e.message})")
     end
 
     def send_binary_opcode(opcode, payload = ''.b)
       @bot.debug("Sending voice binary opcode #{opcode} (#{payload.bytesize} bytes)")
       @client.send(opcode.chr + payload, :binary)
+    rescue SystemCallError, IOError => e
+      @connection_dead = true
+      @bot.debug("VWS: send_binary_opcode failed, marking connection dead (#{e.class}: #{e.message})")
     end
 
     # Event handlers; public for websocket-simple to work correctly
@@ -633,6 +645,8 @@ module Discordrb::Voice
     def heartbeat_loop
       @heartbeat_running = true
       while @heartbeat_running
+        break if @connection_dead
+
         if @heartbeat_interval
           sleep @heartbeat_interval / 1000.0
           send_heartbeat
@@ -654,10 +668,12 @@ module Discordrb::Voice
         method(:websocket_message),
         proc do |e|
           @connection_error ||= e if !@ready || !@media_ready
+          @connection_dead = true
           Discordrb::LOGGER.error "VWS error: #{e}"
         end,
         proc do |e|
           @connection_error ||= e if !@ready || !@media_ready
+          @connection_dead = true
           Discordrb::LOGGER.warn "VWS close: #{e}"
         end
       )
